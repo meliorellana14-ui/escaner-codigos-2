@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Escáner de códigos</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#1d2330;--card:#fff;--accent:#2563eb;--muted:#5f6876;--ok:#15803d;--err:#b91c1c;--line:#cbd1db}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0f1218;--fg:#e8ebf1;--card:#1a1f2a;--accent:#60a5fa;--muted:#9aa3b2;--ok:#4ade80;--err:#f87171;--line:#3a4252}}
+:root[data-theme="dark"]{--bg:#0f1218;--fg:#e8ebf1;--card:#1a1f2a;--accent:#60a5fa;--muted:#9aa3b2;--ok:#4ade80;--err:#f87171;--line:#3a4252}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg);padding:16px;max-width:520px;margin-inline:auto;min-height:100vh;background-color:var(--bg)}
+h1{font-size:20px;margin:4px 0 12px}
+.card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+#video{width:100%;border-radius:10px;background:#000;aspect-ratio:4/3;object-fit:cover;display:block}
+button{font:inherit;border:0;border-radius:10px;padding:12px 14px;background:var(--accent);color:#fff;font-weight:600;width:100%;cursor:pointer}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+label{display:block;font-size:14px;color:var(--muted);margin:10px 0 4px}
+input,select,textarea{width:100%;font:inherit;font-size:16px;padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+textarea{min-height:70px;resize:vertical}
+.row{display:flex;gap:8px}.row>*{flex:1}
+#msg{margin-top:10px;font-weight:600;min-height:20px;word-break:break-word}
+.ok{color:var(--ok)}.err{color:var(--err)}
+.hint{font-size:13px;color:var(--muted);margin:8px 0 0}
+</style>
+</head>
+<body>
+<h1>Escáner de códigos</h1>
+
+<div class="card">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="row" style="margin-top:10px">
+    <button id="btnCam" type="button" class="sec">Iniciar cámara</button>
+    <button id="btnStop" type="button" class="sec">Detener</button>
+  </div>
+  <p class="hint">Códigos EAN-13 y Code 128. Apunta al código dentro del recuadro; si no lee, escríbelo abajo.</p>
+</div>
+
+<form id="form" class="card" autocomplete="off">
+  <label for="codigo">Código</label>
+  <input id="codigo" required placeholder="Escanea o escribe el código">
+
+  <label for="tipo">Tipo</label>
+  <select id="tipo">
+    <option value="bodega">Bodega</option>
+    <option value="medidor">Medidor</option>
+  </select>
+
+  <label id="lblCant" for="cantidad">Cantidad</label>
+  <input id="cantidad" type="number" step="any" min="0" required inputmode="decimal">
+
+  <label for="usuario">Usuario</label>
+  <input id="usuario" required>
+
+  <label for="notas">Notas</label>
+  <textarea id="notas"></textarea>
+
+  <div style="margin-top:14px"><button type="submit" id="btnSave">Guardar</button></div>
+  <div id="msg" aria-live="polite"></div>
+</form>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+const ENDPOINT = 'https://script.google.com/macros/s/AKfycbz2AlptLq6PnFJDEi3FA_IBcvfBjVELKby-5DqiA__VQua_Pl74wo5Mpt6h2-wZKs1lFw/exec';
+const TOKEN = 'esc_K7r2Qm9xW4vL8pT1nB6yH3sD5jF0aZ';
+const HOJA = 'Escaneos';
+
+const $ = id => document.getElementById(id);
+const video = $('video'), codigoEl = $('codigo'), tipoEl = $('tipo'), cantEl = $('cantidad'),
+      usuarioEl = $('usuario'), notasEl = $('notas'), btnSave = $('btnSave'), msgEl = $('msg'), lblCant = $('lblCant');
+
+let controls = null;
+let formato = 'manual';
+let lastCode = '', lastTime = 0;
+
+// Recordar usuario y tipo en este navegador (solo para comodidad)
+try {
+  usuarioEl.value = localStorage.getItem('esc_usuario') || '';
+  tipoEl.value = localStorage.getItem('esc_tipo') || 'bodega';
+} catch (e) {}
+function ajustarEtiqueta() {
+  lblCant.textContent = tipoEl.value === 'medidor' ? 'Lectura' : 'Cantidad';
+}
+ajustarEtiqueta();
+tipoEl.addEventListener('change', ajustarEtiqueta);
+codigoEl.addEventListener('input', () => { formato = 'manual'; });
+
+function msg(texto, clase) {
+  msgEl.textContent = texto;
+  msgEl.className = clase || '';
+}
+
+function onCodigo(texto, fmt) {
+  const ahora = Date.now();
+  if (texto === lastCode && ahora - lastTime < 2500) return;
+  lastCode = texto; lastTime = ahora;
+  codigoEl.value = texto;
+  formato = fmt === ZXing.BarcodeFormat.EAN_13 ? 'EAN-13' : 'Code 128';
+  if (navigator.vibrate) navigator.vibrate(120);
+  msg('Leído ' + formato + ': ' + texto, 'ok');
+}
+
+async function iniciarCamara() {
+  if (typeof ZXing === 'undefined') {
+    msg('No se cargó el lector de códigos. Revisa la conexión; también puedes escribir el código.', 'err');
+    return;
+  }
+  if (controls) return;
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13, ZXing.BarcodeFormat.CODE_128]);
+  hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+  const reader = new ZXing.BrowserMultiFormatReader(hints);
+  try {
+    controls = await reader.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } }, audio: false },
+      video,
+      (result) => { if (result) onCodigo(result.getText(), result.getBarcodeFormat()); }
+    );
+  } catch (e) {
+    msg('No se pudo abrir la cámara (' + e.message + '). Revisa el permiso de cámara o escribe el código.', 'err');
+  }
+}
+
+function detenerCamara() {
+  if (controls) { controls.stop(); controls = null; }
+}
+
+$('btnCam').addEventListener('click', iniciarCamara);
+$('btnStop').addEventListener('click', detenerCamara);
+
+function limpiarTrasGuardar() {
+  codigoEl.value = '';
+  cantEl.value = '';
+  notasEl.value = '';
+  formato = 'manual';
+  lastCode = '';
+}
+
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const payload = {
+    token: TOKEN,
+    hoja: HOJA,
+    fecha: new Date().toISOString(),
+    tipo: tipoEl.value,
+    codigo: codigoEl.value.trim(),
+    formato: formato,
+    cantidad: cantEl.value,
+    usuario: usuarioEl.value.trim(),
+    notas: notasEl.value.trim()
+  };
+  try { localStorage.setItem('esc_usuario', payload.usuario); localStorage.setItem('esc_tipo', payload.tipo); } catch (err) {}
+
+  btnSave.disabled = true;
+  msg('Guardando…', '');
+  try {
+    const r = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    });
+    let j = null;
+    try { j = await r.json(); } catch (err) {}
+    if (j && j.ok) {
+      msg('Guardado en la hoja ✔', 'ok');
+      limpiarTrasGuardar();
+    } else if (j && j.error) {
+      msg('Error: ' + j.error, 'err');
+    } else {
+      msg('Respuesta inesperada. Revisa la hoja antes de volver a enviar.', 'err');
+    }
+  } catch (err) {
+    // No reenviar: el envío pudo llegar aunque no se pudo leer la respuesta.
+    msg('No se confirmó el envío (' + err.message + '). Revisa la hoja antes de volver a guardar.', 'err');
+  } finally {
+    btnSave.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
